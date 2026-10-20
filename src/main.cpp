@@ -1,6 +1,7 @@
 #include <Geode/Geode.hpp>
 #include <Geode/ui/Notification.hpp>
 #include <Geode/ui/Popup.hpp>
+#include <Geode/ui/ScrollLayer.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <vector>
 #include <algorithm>
@@ -64,6 +65,8 @@ namespace {
     int rescueTicks()  { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-ticks")); }
     // Minimum extra survival ticks an alternative must give before rescue acts (lower = more aggressive).
     int rescueMargin() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-margin")); }
+    // Minimum ticks between two rescue actions (stops it from spamming clicks).
+    int rescueCooldown() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-cooldown")); }
 }
 
 // Defined below, next to the settings panel.
@@ -91,6 +94,7 @@ private:
     int  m_maxTicksWave = PRESETS[0].waveTicks;
     bool m_hotkeyWasDown = false;
     bool m_panelKeyWasDown = false;
+    int  m_rescueCooldownLeft = 0;
     bool m_rescueOverride = false;   // rescue changed the hold state; the next real input hands control back
 
     // Buffer state
@@ -242,6 +246,7 @@ public:
         m_ticksSinceLastInput = 999;
         m_rapidInputStreak = 0;
         m_rescueOverride = false;
+        m_rescueCooldownLeft = 0;
     }
 
     void init() {
@@ -513,11 +518,28 @@ public:
     void rescueTick(PlayLayer* pl, PlayerObject* player) {
         const int horizon = rescueTicks();
         if (horizon <= 0 || player->m_isDead || !m_simPlayer1) return;
+        if (m_rescueCooldownLeft > 0) { m_rescueCooldownLeft--; return; }
         if (m_waitTicks != -1) return;   // a buffered input is pending: let the buffer finish
 
         const bool isDual = pl->m_gameState.m_isDualMode && pl->m_player2 != nullptr;
         PlayerObject* p2 = isDual ? pl->m_player2 : nullptr;
         const bool hold = m_gameHolding;
+
+        // Hand control back as soon as it is safe: if rescue is overriding you and your REAL
+        // button state survives the lookahead, go back to it instead of staying on its own path.
+        if (m_rescueOverride) {
+            if (hold == m_physicalHolding) {
+                m_rescueOverride = false;
+            } else {
+                const int mine = getSurvivalTicks(pl, player, p2, isDual, 0, m_physicalHolding, horizon);
+                if (mine >= horizon) {
+                    fireButton(pl, m_physicalHolding);
+                    m_rescueOverride = false;
+                    m_rescueCooldownLeft = rescueCooldown();
+                    return;
+                }
+            }
+        }
 
         const int keep = getSurvivalTicks(pl, player, p2, isDual, 0, hold, horizon);
         if (keep >= horizon) return;     // safe as it is
@@ -527,12 +549,12 @@ public:
         bool act = false;
 
         const int toggle = getSurvivalTicks(pl, player, p2, isDual, 0, !hold, horizon);
-        if (toggle > best + margin) { best = toggle; act = true; }
+        if (toggle > best + margin || (toggle >= horizon && toggle > best)) { best = toggle; act = true; }
 
         if (hold) {
             // Tap modes: a new click needs a release first (release now, press on the next tick)
             const int repress = getSurvivalTicks(pl, player, p2, isDual, 0, false, horizon, 1);
-            if (repress > best + margin) { best = repress; act = true; }
+            if (repress > best + margin || (repress >= horizon && repress > best)) { best = repress; act = true; }
         }
 
         if (act) {
@@ -540,6 +562,7 @@ public:
                 hold ? "RELEASE" : "PRESS", keep, best, horizon);
             fireButton(pl, !hold);
             m_rescueOverride = true;
+            m_rescueCooldownLeft = rescueCooldown();
         }
     }
 
@@ -623,6 +646,7 @@ protected:
         { "ship-ticks",          "Ship delay (0 = off)", 0,  32,           1 },
         { "rescue-ticks",        "Rescue (0 = off)",     0,  80,           4 },
         { "rescue-margin",       "Rescue margin (low=aggr.)", 0, 20,       1 },
+        { "rescue-cooldown",     "Rescue cooldown (ticks)",   0, 40,       2 },
     };
     static constexpr int ROW_COUNT = sizeof(ROWS) / sizeof(ROWS[0]);
     static constexpr const char* STAGE_NAMES[] = { "2/2", "4/4", "8/8", "16/8", "CUSTOM", "OFF" };
@@ -660,37 +684,56 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(320.f, 350.f)) return false;
+        if (!Popup::init(320.f, 250.f)) return false;
         this->setTitle("Predictive Input Buffer");
+
+        // Scrollable list (mouse wheel or drag) so every row fits on any screen
+        const CCSize viewSize { 290.f, 178.f };
+        const float rowH = 32.f;
+        const float contentH = std::max(viewSize.height, ROW_COUNT * rowH + 12.f);
+
+        auto scroll = ScrollLayer::create(viewSize);
+        scroll->m_contentLayer->setContentSize({ viewSize.width, contentH });
+        m_mainLayer->addChildAtPosition(scroll, Anchor::Center, { -viewSize.width / 2, -viewSize.height / 2 - 12.f });
+
+        auto menu = CCMenu::create();
+        menu->setPosition({ 0.f, 0.f });
+        menu->setContentSize({ viewSize.width, contentH });
+        scroll->m_contentLayer->addChild(menu);
 
         m_valueLabels.clear();
         for (int i = 0; i < ROW_COUNT; i++) {
-            float y = -58.f - i * 30.f;
+            const float y = contentH - 20.f - i * rowH;
 
             auto name = CCLabelBMFont::create(ROWS[i].label, "bigFont.fnt");
-            name->setScale(0.42f);
-            name->setAnchorPoint({0.f, 0.5f});
-            m_mainLayer->addChildAtPosition(name, Anchor::TopLeft, {18.f, y});
+            name->setScale(0.38f);
+            name->setAnchorPoint({ 0.f, 0.5f });
+            name->setPosition({ 8.f, y });
+            scroll->m_contentLayer->addChild(name);
 
             auto value = CCLabelBMFont::create("0", "goldFont.fnt");
-            value->setScale(0.55f);
-            m_mainLayer->addChildAtPosition(value, Anchor::TopRight, {-118.f, y});
+            value->setScale(0.5f);
+            value->setPosition({ viewSize.width - 108.f, y });
+            scroll->m_contentLayer->addChild(value);
             m_valueLabels.push_back(value);
 
             for (int dir = 0; dir < 2; dir++) {
                 auto spr = ButtonSprite::create(dir ? "+" : "-", 28, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.7f);
                 auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BufferPopup::onStep));
                 btn->setTag(i * 2 + dir);
-                m_buttonMenu->addChildAtPosition(btn, Anchor::TopRight, {dir ? -26.f : -62.f, y});
+                btn->setPosition({ viewSize.width - (dir ? 20.f : 56.f), y });
+                menu->addChild(btn);
             }
         }
+        scroll->scrollToTop();
 
-        auto hint = CCLabelBMFont::create("Wave: 4 ticks = 1 frame @ 60fps", "chatFont.fnt");
-        hint->setScale(0.6f);
+        auto hint = CCLabelBMFont::create("Scroll with the mouse wheel. 4 ticks = 1 frame @ 60fps", "chatFont.fnt");
+        hint->setScale(0.5f);
         hint->setOpacity(160);
-        m_mainLayer->addChildAtPosition(hint, Anchor::Bottom, {0.f, 16.f});
+        m_mainLayer->addChildAtPosition(hint, Anchor::Bottom, { 0.f, 10.f });
 
         refreshLabels();
+        handleTouchPriority(this);
         return true;
     }
 

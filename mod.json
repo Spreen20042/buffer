@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.5.1",
+	"version": "v1.5.4",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -141,10 +141,18 @@
 		"rescue-margin": {
 			"type": "int",
 			"name": "Rescue Margin (lower = more aggressive)",
-			"description": "Extra survival ticks an alternative input must give before Rescue acts. 0 = acts on any improvement; higher = only on clear saves. Default 2.",
-			"default": 2,
+			"description": "Extra survival ticks an alternative input must give before Rescue acts (unless it clears the whole lookahead). 0 = acts on any improvement; higher = fewer clicks. Default 4.",
+			"default": 4,
 			"min": 0,
 			"max": 20
+		},
+		"rescue-cooldown": {
+			"type": "int",
+			"name": "Rescue Cooldown (ticks)",
+			"description": "Minimum ticks between two rescue actions. Higher = fewer extra clicks. 4 ticks = 1 frame @ 60fps.",
+			"default": 6,
+			"min": 0,
+			"max": 40
 		}
 	}
 }
