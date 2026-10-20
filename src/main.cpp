@@ -66,6 +66,7 @@ namespace {
     // Minimum extra survival ticks an alternative must give before rescue acts (lower = more aggressive).
     int rescueMargin() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-margin")); }
     // Minimum ticks between two rescue actions (stops it from spamming clicks).
+    int rescueUrgency() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-urgency")); }
     int rescueCooldown() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-cooldown")); }
 }
 
@@ -543,6 +544,9 @@ public:
 
         const int keep = getSurvivalTicks(pl, player, p2, isDual, 0, hold, horizon);
         if (keep >= horizon) return;     // safe as it is
+        // Not urgent yet: the player may still click in time. Only step in when the death is
+        // closer than `rescue-urgency` ticks, so the player keeps playing.
+        if (keep > rescueUrgency()) return;
 
         const int margin = rescueMargin();
         int best = keep;
@@ -646,6 +650,7 @@ protected:
         { "ship-ticks",          "Ship delay (0 = off)", 0,  32,           1 },
         { "rescue-ticks",        "Rescue (0 = off)",     0,  80,           4 },
         { "rescue-margin",       "Rescue margin (low=aggr.)", 0, 20,       1 },
+        { "rescue-urgency",      "Rescue urgency (ticks)",    0, 40,       2 },
         { "rescue-cooldown",     "Rescue cooldown (ticks)",   0, 40,       2 },
     };
     static constexpr int ROW_COUNT = sizeof(ROWS) / sizeof(ROWS[0]);

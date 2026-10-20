@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.5.4",
+	"version": "v1.5.5",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -145,6 +145,14 @@
 			"default": 4,
 			"min": 0,
 			"max": 20
+		},
+		"rescue-urgency": {
+			"type": "int",
+			"name": "Rescue Urgency (ticks)",
+			"description": "Rescue only steps in when a death is predicted within this many ticks. Lower = you play more, rescue acts only at the last moment. Higher = it steps in earlier. 4 ticks = 1 frame @ 60fps. Default 8.",
+			"default": 8,
+			"min": 0,
+			"max": 40
 		},
 		"rescue-cooldown": {
 			"type": "int",
