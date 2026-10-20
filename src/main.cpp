@@ -58,6 +58,12 @@ namespace {
 
     // Ship assist: max delay in ticks (0 = ship is never touched, like the original mod).
     int shipTicks()    { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("ship-ticks")); }
+
+    // Rescue mode: lookahead in ticks (0 = off). When the simulation predicts a death within
+    // this many ticks, the mod injects its own press/release if that avoids it.
+    int rescueTicks()  { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-ticks")); }
+    // Minimum extra survival ticks an alternative must give before rescue acts (lower = more aggressive).
+    int rescueMargin() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-margin")); }
 }
 
 // Defined below, next to the settings panel.
@@ -85,6 +91,7 @@ private:
     int  m_maxTicksWave = PRESETS[0].waveTicks;
     bool m_hotkeyWasDown = false;
     bool m_panelKeyWasDown = false;
+    bool m_rescueOverride = false;   // rescue changed the hold state; the next real input hands control back
 
     // Buffer state
     int  m_waitTicks = -1;          // -1 = inactive, >= 0 = countdown, -2 = queued opposite action
@@ -234,6 +241,7 @@ public:
         m_gameHolding = false;
         m_ticksSinceLastInput = 999;
         m_rapidInputStreak = 0;
+        m_rescueOverride = false;
     }
 
     void init() {
@@ -282,7 +290,7 @@ public:
         }
     }
 
-    int getSurvivalTicks(PlayLayer* pl, PlayerObject* realP1, PlayerObject* realP2, bool isDual, int delayFrames, bool actionPush, int maxTicks) {
+    int getSurvivalTicks(PlayLayer* pl, PlayerObject* realP1, PlayerObject* realP2, bool isDual, int delayFrames, bool actionPush, int maxTicks, int flipBackAt = -1) {
         if (!pl || !m_simPlayer1 || !realP1) return maxTicks;
 
         const bool useP2 = isDual && m_simPlayer2 && realP2;
@@ -308,6 +316,9 @@ public:
         for (int i = 0; i < delayFrames + maxTicks; i++) {
             if (i == delayFrames) {
                 setSimButtons(useP2, actionPush);
+            }
+            if (i == flipBackAt) {
+                setSimButtons(useP2, !actionPush);
             }
 
             m_simPlayer1->update(dt);
@@ -370,6 +381,7 @@ public:
 
         // Always record the true physical state first
         m_physicalHolding = push;
+        m_rescueOverride = false;   // a real input always takes control back from rescue mode
 
         if (!m_enabled) {
             m_gameHolding = push;
@@ -495,12 +507,50 @@ public:
         return true;
     }
 
+    // RESCUE MODE: every physics tick, check whether "keep doing what the game is doing" dies
+    // within the lookahead. If so, try "toggle the button now" (and, for tap modes that are
+    // currently holding, "release now, press next tick") and fire it when it survives longer.
+    void rescueTick(PlayLayer* pl, PlayerObject* player) {
+        const int horizon = rescueTicks();
+        if (horizon <= 0 || player->m_isDead || !m_simPlayer1) return;
+        if (m_waitTicks != -1) return;   // a buffered input is pending: let the buffer finish
+
+        const bool isDual = pl->m_gameState.m_isDualMode && pl->m_player2 != nullptr;
+        PlayerObject* p2 = isDual ? pl->m_player2 : nullptr;
+        const bool hold = m_gameHolding;
+
+        const int keep = getSurvivalTicks(pl, player, p2, isDual, 0, hold, horizon);
+        if (keep >= horizon) return;     // safe as it is
+
+        const int margin = rescueMargin();
+        int best = keep;
+        bool act = false;
+
+        const int toggle = getSurvivalTicks(pl, player, p2, isDual, 0, !hold, horizon);
+        if (toggle > best + margin) { best = toggle; act = true; }
+
+        if (hold) {
+            // Tap modes: a new click needs a release first (release now, press on the next tick)
+            const int repress = getSurvivalTicks(pl, player, p2, isDual, 0, false, horizon, 1);
+            if (repress > best + margin) { best = repress; act = true; }
+        }
+
+        if (act) {
+            log::debug("Rescue: {} (survival {} -> {} of {} ticks)",
+                hold ? "RELEASE" : "PRESS", keep, best, horizon);
+            fireButton(pl, !hold);
+            m_rescueOverride = true;
+        }
+    }
+
     void onPlayerUpdate(PlayerObject* player) {
         PlayLayer* pl = PlayLayer::get();
         if (!pl || player != pl->m_player1) return;
 
         // Polled before the m_enabled check so the hotkey can always cycle back ON
         pollHotkeys();
+
+        rescueTick(pl, player);
 
         if (!m_enabled) return;
 
@@ -512,7 +562,7 @@ public:
         if (shipActive && shipTicks() <= 0) {
             m_waitTicks = -1;
             m_queuedOpposite = false;
-            if (m_gameHolding != m_physicalHolding) {
+            if (m_gameHolding != m_physicalHolding && !m_rescueOverride) {
                 fireButton(pl, m_physicalHolding);
             }
             return;
@@ -532,7 +582,7 @@ public:
             fireButton(pl, !m_bufferedPush);
             m_queuedOpposite = false;
             m_waitTicks = -1;
-        } else if (m_gameHolding != m_physicalHolding) {
+        } else if (m_gameHolding != m_physicalHolding && !m_rescueOverride) {
             // Failsafe: with no buffer active, the game's hold state must match the
             // physical button so Wave can never stay stuck holding.
             fireButton(pl, m_physicalHolding);
@@ -571,6 +621,8 @@ protected:
         { "wave-horizon",        "Lookahead (wave)",     30, 160,          5 },
         { "spam-streak",         "Wave/Ship spam streak",1,  10,           1 },
         { "ship-ticks",          "Ship delay (0 = off)", 0,  32,           1 },
+        { "rescue-ticks",        "Rescue (0 = off)",     0,  80,           4 },
+        { "rescue-margin",       "Rescue margin (low=aggr.)", 0, 20,       1 },
     };
     static constexpr int ROW_COUNT = sizeof(ROWS) / sizeof(ROWS[0]);
     static constexpr const char* STAGE_NAMES[] = { "2/2", "4/4", "8/8", "16/8", "CUSTOM", "OFF" };
@@ -608,7 +660,7 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(320.f, 285.f)) return false;
+        if (!Popup::init(320.f, 350.f)) return false;
         this->setTitle("Predictive Input Buffer");
 
         m_valueLabels.clear();

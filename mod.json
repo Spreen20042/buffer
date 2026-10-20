@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.4.0",
+	"version": "v1.5.1",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -129,6 +129,22 @@
 			"default": 8,
 			"min": 0,
 			"max": 32
+		},
+		"rescue-ticks": {
+			"type": "int",
+			"name": "Rescue Mode (lookahead ticks, 0 = off)",
+			"description": "EXPERIMENTAL. When a death is predicted within this many ticks, the mod injects its own press/release if that avoids it. 0 = off. Try 24 to start. High values cost a lot of CPU; a real click gives control back to you.",
+			"default": 0,
+			"min": 0,
+			"max": 80
+		},
+		"rescue-margin": {
+			"type": "int",
+			"name": "Rescue Margin (lower = more aggressive)",
+			"description": "Extra survival ticks an alternative input must give before Rescue acts. 0 = acts on any improvement; higher = only on clear saves. Default 2.",
+			"default": 2,
+			"min": 0,
+			"max": 20
 		}
 	}
 }
