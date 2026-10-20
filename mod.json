@@ -1,0 +1,134 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081"
+	},
+	"version": "v1.4.0",
+	"id": "ai.predictivebuffer",
+	"name": "Predictive Input Buffer",
+	"developer": "lilWC",
+	"description": "Trajectory-based 1-2 frame press and wave release input buffer.",
+	"settings": {
+		"hotkey": {
+			"type": "string",
+			"name": "Stage Hotkey",
+			"description": "Key that cycles the buffer stage while playing (a letter, or Insert/Delete/Home/End/Page Up/Page Down). Shows an on-screen notice.",
+			"default": "B",
+			"one-of": [
+				"V",
+				"B",
+				"G",
+				"H",
+				"J",
+				"K",
+				"N",
+				"M",
+				"Q",
+				"E",
+				"R",
+				"T",
+				"Y",
+				"Insert",
+				"Delete",
+				"Home",
+				"End",
+				"Page Up",
+				"Page Down"
+			]
+		},
+		"panel-hotkey": {
+			"type": "string",
+			"name": "Panel Hotkey",
+			"description": "Key that pauses the level and opens the Buffer settings panel while playing.",
+			"default": "V",
+			"one-of": [
+				"V",
+				"B",
+				"G",
+				"H",
+				"J",
+				"K",
+				"N",
+				"M",
+				"Q",
+				"E",
+				"R",
+				"T",
+				"Y",
+				"Insert",
+				"Delete",
+				"Home",
+				"End",
+				"Page Up",
+				"Page Down"
+			]
+		},
+		"start-stage": {
+			"type": "int",
+			"name": "Starting Stage",
+			"description": "Stage used when the game starts (1: 2/2, 2: 4/4, 3: 8/8, 4: 16/8, 5: CUSTOM, 6: OFF).",
+			"default": 1,
+			"min": 1,
+			"max": 6,
+			"control": {
+				"slider": true
+			}
+		},
+		"custom-normal-ticks": {
+			"type": "int",
+			"name": "Custom Stage: Max Delay (all modes)",
+			"description": "Maximum ticks an input may be delayed outside Wave. 4 ticks = 1 frame @ 60fps. Higher = more assist, but more delay risk.",
+			"default": 24,
+			"min": 1,
+			"max": 64
+		},
+		"custom-wave-ticks": {
+			"type": "int",
+			"name": "Custom Stage: Max Delay (Wave)",
+			"description": "Maximum ticks an input may be delayed in Wave.",
+			"default": 12,
+			"min": 1,
+			"max": 32
+		},
+		"normal-horizon": {
+			"type": "int",
+			"name": "Lookahead (all modes, ticks)",
+			"description": "How far ahead the simulation checks for hazards. Higher sees more but costs more CPU.",
+			"default": 160,
+			"min": 40,
+			"max": 320
+		},
+		"wave-horizon": {
+			"type": "int",
+			"name": "Lookahead (Wave, ticks)",
+			"description": "How far ahead the simulation checks in Wave (Mini Wave uses 50/65 of this).",
+			"default": 65,
+			"min": 30,
+			"max": 160
+		},
+		"spam-interval": {
+			"type": "int",
+			"name": "Wave Spam Interval (ticks)",
+			"description": "Inputs closer together than this count as wave spam.",
+			"default": 8,
+			"min": 1,
+			"max": 32
+		},
+		"spam-streak": {
+			"type": "int",
+			"name": "Wave Spam Streak",
+			"description": "How many rapid inputs in a row bypass the buffer in Wave.",
+			"default": 3,
+			"min": 1,
+			"max": 10
+		},
+		"ship-ticks": {
+			"type": "int",
+			"name": "Ship Delay (ticks, 0 = off)",
+			"description": "Maximum ticks an input may be delayed in Ship. 0 leaves Ship completely untouched. Applies to both Ship and Dual-with-Ship.",
+			"default": 8,
+			"min": 0,
+			"max": 32
+		}
+	}
+}
