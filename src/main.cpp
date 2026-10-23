@@ -77,6 +77,9 @@ namespace {
     constexpr float UNITS_PER_BLOCK = 30.f;
     // Exact click: how long (ticks) a click may be held back, waiting for the exact moment it is safe.
     // 0 = off (only the Stage delays apply). Respects Auto zones (soft outside learned zones).
+    // Master switch: when off, the whole mod stays out of the way (raw input, no buffer, no rescue).
+    bool modOn() { return Mod::get()->getSettingValue<int64_t>("enabled") > 0; }
+    bool debugInput() { return Mod::get()->getSettingValue<bool>("debug-input"); }
     int exactWait() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("exact-wait")); }
     int rescueUrgency() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-urgency")); }
     int rescueCooldown() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-cooldown")); }
@@ -107,6 +110,8 @@ private:
     int  m_maxTicksWave = PRESETS[0].waveTicks;
     bool m_hotkeyWasDown = false;
     bool m_panelKeyWasDown = false;
+    bool m_toggleKeyWasDown = false;
+    bool m_offHandled = false;       // pending state already cleaned up after the master switch went off
     int  m_rescueCooldownLeft = 0;
 
     // Auto zones state (per level)
@@ -236,6 +241,12 @@ private:
     }
 
     void pollHotkeys() {
+        if (keyPressedEdge("toggle-hotkey", m_toggleKeyWasDown)) {
+            const bool nowOn = !modOn();
+            Mod::get()->setSettingValue<int64_t>("enabled", nowOn ? 1 : 0);
+            Notification::create(nowOn ? "Predictive Buffer: ON" : "Predictive Buffer: OFF (raw input)",
+                nowOn ? NotificationIcon::Success : NotificationIcon::Info, 1.2f)->show();
+        }
         if (keyPressedEdge("hotkey", m_hotkeyWasDown)) {
             applyPreset(m_presetIndex + 1, true);
         }
@@ -670,6 +681,24 @@ public:
         // Polled before the m_enabled check so the hotkey can always cycle back ON
         pollHotkeys();
 
+        // Master switch OFF: hand everything back to the player, once, and do nothing else.
+        if (!modOn()) {
+            if (!m_offHandled) {
+                m_offHandled = true;
+                const bool needSync = m_waitTicks != -1 || m_gameHolding != m_physicalHolding;
+                m_waitTicks = -1;
+                m_queuedOpposite = false;
+                m_rescueOverride = false;
+                if (needSync) fireButton(pl, m_physicalHolding);
+            }
+            return;
+        }
+        if (m_offHandled) {          // just switched back ON: start from a clean state
+            m_offHandled = false;
+            resetState();
+            m_physicalHolding = false;
+        }
+
         updateZone(player);
         rescueTick(pl, player);
 
@@ -735,6 +764,7 @@ protected:
         int min, max, step;
     };
     static constexpr Row ROWS[] = {
+        { "enabled",             "Mod enabled (0=off)",  0,  1,            1 },
         { nullptr,               "Stage",                1,  PRESET_COUNT, 1 },
         { "custom-normal-ticks", "Custom delay (all)",   1,  64,           2 },
         { "custom-wave-ticks",   "Custom delay (wave)",  1,  32,           1 },
@@ -1082,7 +1112,10 @@ class $modify(BufBaseGameLayer, GJBaseGameLayer) {
     }
 
     void handleButton(bool down, int button, bool isPlayer1) {
-        if (!s_sim.isSimulating() && !s_sim.isFiringBuffered() && button == 1 && PlayLayer::get()) {
+        if (debugInput() && !s_sim.isSimulating() && !s_sim.isFiringBuffered()) {
+            log::info("input: down={} button={} player1={} (fired by mod: no)", down, button, isPlayer1);
+        }
+        if (modOn() && !s_sim.isSimulating() && !s_sim.isFiringBuffered() && button == 1 && PlayLayer::get()) {
             if (!s_sim.interceptInput(this, down, isPlayer1)) {
                 return;
             }

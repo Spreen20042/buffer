@@ -3,12 +3,47 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.7.1",
+	"version": "v1.8.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
 	"description": "Trajectory-based 1-2 frame press and wave release input buffer.",
 	"settings": {
+		"enabled": {
+			"type": "int",
+			"name": "Mod Enabled (0 = off, 1 = on)",
+			"description": "Master switch. 0 turns the whole mod off: raw input, no buffer, no rescue. Also toggled in-level with the Toggle Hotkey or from the panel.",
+			"default": 1,
+			"min": 0,
+			"max": 1
+		},
+		"toggle-hotkey": {
+			"type": "string",
+			"name": "Toggle Hotkey",
+			"description": "Key that turns the whole mod on/off while playing (shows an on-screen notice).",
+			"default": "N",
+			"one-of": [
+				"V",
+				"B",
+				"G",
+				"H",
+				"J",
+				"K",
+				"N",
+				"M",
+				"Q",
+				"E",
+				"R",
+				"T",
+				"Y",
+				"Insert",
+				"Delete",
+				"Home",
+				"End",
+				"Page Up",
+				"Page Down"
+			]
+		},
 		"hotkey": {
 			"type": "string",
 			"name": "Stage Hotkey",
@@ -193,6 +228,12 @@
 			"default": 2,
 			"min": 1,
 			"max": 10
+		},
+		"debug-input": {
+			"type": "bool",
+			"name": "Log Input Events (debug)",
+			"description": "Writes every button event (down, button, player) to the Geode log. Turn on only to diagnose input problems, e.g. with the Up arrow.",
+			"default": false
 		}
 	}
 }
