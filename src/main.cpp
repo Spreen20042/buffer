@@ -464,6 +464,14 @@ public:
             return true;
         }
 
+        // Repeated events: holding a KEY makes the OS send the same press again and again (key
+        // auto-repeat); a mouse button does not. A repeat is not a new click, so it must not count
+        // for the spam guard, hand control back from rescue mode, or be buffered again.
+        if (push == m_physicalHolding) {
+            if (m_waitTicks >= 0 || m_waitTicks == -2) return false;   // already waiting in the buffer
+            return true;
+        }
+
         // Always record the true physical state first
         m_physicalHolding = push;
         m_rescueOverride = false;   // a real input always takes control back from rescue mode
