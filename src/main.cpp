@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <cctype>
 #include <string>
 #include <Geode/modify/PlayLayer.hpp>
@@ -79,6 +80,9 @@ namespace {
     // 0 = off (only the Stage delays apply). Respects Auto zones (soft outside learned zones).
     // Master switch: when off, the whole mod stays out of the way (raw input, no buffer, no rescue).
     bool modOn() { return Mod::get()->getSettingValue<int64_t>("enabled") > 0; }
+    // Miss log: records every death that the simulation had predicted as survivable, so the
+    // simulation can be corrected with real data. Written to <save dir>/misses.log
+    bool logMisses() { return Mod::get()->getSettingValue<bool>("log-misses"); }
     bool debugInput() { return Mod::get()->getSettingValue<bool>("debug-input"); }
     int exactWait() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("exact-wait")); }
     int rescueUrgency() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-urgency")); }
@@ -113,6 +117,13 @@ private:
     bool m_toggleKeyWasDown = false;
     bool m_offHandled = false;       // pending state already cleaned up after the master switch went off
     int  m_rescueCooldownLeft = 0;
+    int  m_rescueSkip = 0;           // ticks to skip the rescue check after a "safe for the whole lookahead" result
+
+    // Miss log state
+    int  m_tickCounter = 0;
+    int  m_probeTick = -1;           // tick of the last prediction
+    int  m_probeKeep = 0;            // predicted survival (ticks) at that moment
+    bool m_inputSinceProbe = false;  // any input after the prediction makes it void
 
     // Auto zones state (per level)
     std::vector<float> m_deathX;
@@ -336,6 +347,8 @@ public:
         m_rapidInputStreak = 0;
         m_rescueOverride = false;
         m_rescueCooldownLeft = 0;
+        m_rescueSkip = 0;
+        m_probeTick = -1;
     }
 
     void init() {
@@ -365,14 +378,61 @@ public:
     bool isSimulating() const { return m_simulating; }
     bool isFiringBuffered() const { return m_firingBuffered; }
 
+    static const char* vehicleName(PlayerObject* p) {
+        if (p->m_isShip) return "ship";
+        if (p->m_isBird) return "ufo";
+        if (p->m_isBall) return "ball";
+        if (p->m_isDart) return "wave";
+        if (p->m_isRobot) return "robot";
+        if (p->m_isSpider) return "spider";
+        if (p->m_isSwing) return "swing";
+        return "cube";
+    }
+
+    void appendMissLog(std::string const& line) {
+        log::info("{}", line);
+        std::ofstream f(Mod::get()->getSaveDir() / "misses.log", std::ios::app);
+        if (f) f << line << "\n";
+    }
+
+    // The simulation said "you survive N more ticks" and the player died sooner, with no input in between.
+    void logMissIfPredicted(PlayerObject* player, GameObject* killer) {
+        if (!logMisses() || m_probeTick < 0 || m_inputSinceProbe) return;
+        const int elapsed = m_tickCounter - m_probeTick;
+        if (m_probeKeep <= elapsed + 2) return;      // the death was predicted (or nearly)
+        PlayLayer* pl = PlayLayer::get();
+        appendMissLog(fmt::format(
+            "MISS level={} x={:.0f} y={:.0f} mode={} dual={} elapsed={} predicted={} killer_id={} killer_type={} speed={:.2f}",
+            m_levelKey, player->getPositionX(), player->getPositionY(), vehicleName(player),
+            pl && pl->m_gameState.m_isDualMode, elapsed, m_probeKeep,
+            killer ? killer->m_objectID : -1, killer ? static_cast<int>(killer->m_objectType) : -1,
+            player->m_playerSpeed));
+    }
+
+    // Every few ticks, record what the simulation predicts for "keep doing what you are doing".
+    void probeMisses(PlayLayer* pl, PlayerObject* player) {
+        m_tickCounter++;
+        if (!logMisses() || player->m_isDead || !m_simPlayer1) return;
+        if (m_probeTick >= 0 && m_tickCounter - m_probeTick < 8) return;
+        const bool isDual = pl->m_gameState.m_isDualMode && pl->m_player2 != nullptr;
+        PlayerObject* p2 = isDual ? pl->m_player2 : nullptr;
+        const int horizon = (player->m_isDart || player->m_isShip) ? horizonWave() : horizonNormal();
+        m_probeKeep = getSurvivalTicks(pl, player, p2, isDual, 0, m_gameHolding, horizon);
+        m_probeTick = m_tickCounter;
+        m_inputSinceProbe = false;
+    }
+
     // Returns true if the death belongs to a simulation player (and must be swallowed).
-    bool checkSimulationDeath(PlayerObject* player) {
+    bool checkSimulationDeath(PlayerObject* player, GameObject* killer = nullptr) {
         if (m_simulating && (player == m_simPlayer1 || player == m_simPlayer2)) {
             m_simulationDead = true;
             return true;
         }
         // Real player died: remember where (Auto zones), clear any pending buffer.
-        if (player) recordDeath(player->getPositionX());
+        if (player) {
+            recordDeath(player->getPositionX());
+            logMissIfPredicted(player, killer);
+        }
         resetState();
         return false;
     }
@@ -482,6 +542,9 @@ public:
             if (m_waitTicks >= 0 || m_waitTicks == -2) return false;   // already waiting in the buffer
             return true;
         }
+
+        m_inputSinceProbe = true;   // any real input voids the last prediction
+        m_rescueSkip = 0;
 
         // Always record the true physical state first
         m_physicalHolding = push;
@@ -624,6 +687,7 @@ public:
         const int horizon = effRescueTicks();
         if (horizon <= 0 || player->m_isDead || !m_simPlayer1) return;
         if (m_rescueCooldownLeft > 0) { m_rescueCooldownLeft--; return; }
+        if (m_rescueSkip > 0) { m_rescueSkip--; return; }   // last check said safe for the whole lookahead
         if (m_waitTicks != -1) return;   // a buffered input is pending: let the buffer finish
 
         const bool isDual = pl->m_gameState.m_isDualMode && pl->m_player2 != nullptr;
@@ -647,7 +711,10 @@ public:
         }
 
         const int keep = getSurvivalTicks(pl, player, p2, isDual, 0, hold, horizon);
-        if (keep >= horizon) return;     // safe as it is
+        if (keep >= horizon) {           // safe as it is: no need to re-simulate every single tick
+            m_rescueSkip = 3;
+            return;
+        }
         // Not urgent yet: the player may still click in time. Only step in when the death is
         // closer than `rescue-urgency` ticks, so the player keeps playing.
         if (keep > rescueUrgency()) return;
@@ -700,6 +767,7 @@ public:
         }
 
         updateZone(player);
+        probeMisses(pl, player);
         rescueTick(pl, player);
 
         if (!m_enabled) return;
@@ -740,6 +808,8 @@ public:
     }
 
     void fireButton(PlayLayer* pl, bool push) {
+        m_inputSinceProbe = true;
+        m_rescueSkip = 0;
         m_firingBuffered = true;
         m_gameHolding = push;
         pl->handleButton(push, 1, true);
@@ -1002,7 +1072,7 @@ class $modify(BufPlayLayer, PlayLayer) {
     }
 
     void destroyPlayer(PlayerObject* player, GameObject* gameObject) {
-        if (s_sim.checkSimulationDeath(player)) return;
+        if (s_sim.checkSimulationDeath(player, gameObject)) return;
         PlayLayer::destroyPlayer(player, gameObject);
     }
 

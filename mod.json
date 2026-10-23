@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.8.1",
+	"version": "v1.9.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -234,6 +234,12 @@
 			"name": "Log Input Events (debug)",
 			"description": "Writes every button event (down, button, player) to the Geode log. Turn on only to diagnose input problems, e.g. with the Up arrow.",
 			"default": false
+		},
+		"log-misses": {
+			"type": "bool",
+			"name": "Log Prediction Misses",
+			"description": "Records every death the simulation had predicted as survivable (position, vehicle, killer object) to misses.log in the mod's save folder. Send that file to improve the mod's accuracy.",
+			"default": true
 		}
 	}
 }
