@@ -15,3 +15,4 @@ Without installing anything: push this folder to a GitHub repo; the included wor
 (`.github/workflows/build.yml`) builds it. Download the `.geode` from the run's
 **Artifacts -> Build Output**.
 - **Rescue mode** (experimental, off by default): set "Rescue" in the panel (try 24). The mod injects its own input when it predicts a death; a real click hands control back to you.
+- **Auto zones** (off by default): the mod remembers where you die on each level; assist is soft elsewhere and full (your Stage/Ship/Rescue values) near those spots. Clear it from the panel.

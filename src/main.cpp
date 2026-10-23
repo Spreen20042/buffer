@@ -5,6 +5,7 @@
 #include <Geode/modify/PauseLayer.hpp>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <cctype>
 #include <string>
 #include <Geode/modify/PlayLayer.hpp>
@@ -66,6 +67,17 @@ namespace {
     // Minimum extra survival ticks an alternative must give before rescue acts (lower = more aggressive).
     int rescueMargin() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-margin")); }
     // Minimum ticks between two rescue actions (stops it from spamming clicks).
+    // Auto zones: assist is soft everywhere except near places where you died before.
+    int autoZones()     { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("auto-zones")); }
+    int autoRadius()    { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("auto-radius")); }     // blocks
+    int autoMinDeaths() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("auto-min-deaths")); }
+    constexpr int SOFT_NORMAL = 4;   // ticks, outside learned zones
+    constexpr int SOFT_WAVE   = 2;
+    constexpr int SOFT_SHIP   = 2;
+    constexpr float UNITS_PER_BLOCK = 30.f;
+    // Exact click: how long (ticks) a click may be held back, waiting for the exact moment it is safe.
+    // 0 = off (only the Stage delays apply). Respects Auto zones (soft outside learned zones).
+    int exactWait() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("exact-wait")); }
     int rescueUrgency() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-urgency")); }
     int rescueCooldown() { return static_cast<int>(Mod::get()->getSettingValue<int64_t>("rescue-cooldown")); }
 }
@@ -96,6 +108,12 @@ private:
     bool m_hotkeyWasDown = false;
     bool m_panelKeyWasDown = false;
     int  m_rescueCooldownLeft = 0;
+
+    // Auto zones state (per level)
+    std::vector<float> m_deathX;
+    int  m_levelKey = 0;
+    bool m_inZone = false;
+    int  m_zoneCountdown = 0;
     bool m_rescueOverride = false;   // rescue changed the hold state; the next real input hands control back
 
     // Buffer state
@@ -227,7 +245,66 @@ private:
         }
     }
 
+    static std::string zonesKey(int levelId) { return fmt::format("deaths-{}", levelId); }
+
+    // True when full (configured) assist should be used right now.
+    bool boosted() const { return autoZones() <= 0 || m_inZone; }
+
+    int effNormalTicks() const { return boosted() ? m_maxTicksNormal : std::min(m_maxTicksNormal, SOFT_NORMAL); }
+    int effWaveTicks()   const { return boosted() ? m_maxTicksWave   : std::min(m_maxTicksWave, SOFT_WAVE); }
+    int effShipTicks()   const { return boosted() ? shipTicks()      : std::min(shipTicks(), SOFT_SHIP); }
+    int effRescueTicks() const { return boosted() ? rescueTicks() : 0; }
+
+    void loadZones() {
+        m_deathX.clear();
+        m_inZone = false;
+        m_zoneCountdown = 0;
+        m_levelKey = 0;
+        PlayLayer* pl = PlayLayer::get();
+        if (!pl || !pl->m_level) return;
+        m_levelKey = static_cast<int>(pl->m_level->m_levelID.value());
+        if (m_levelKey <= 0) return;
+        m_deathX = Mod::get()->getSavedValue<std::vector<float>>(zonesKey(m_levelKey), std::vector<float>{});
+    }
+
+    void recordDeath(float x) {
+        if (m_levelKey <= 0) return;
+        m_deathX.push_back(x);
+        if (m_deathX.size() > 400) m_deathX.erase(m_deathX.begin());
+        Mod::get()->setSavedValue<std::vector<float>>(zonesKey(m_levelKey), m_deathX);
+    }
+
+    // Re-evaluated every few ticks: are we close to a place where the player died before?
+    void updateZone(PlayerObject* player) {
+        if (autoZones() <= 0) return;
+        if (--m_zoneCountdown > 0) return;
+        m_zoneCountdown = 4;
+
+        const float px = player->getPositionX();
+        const float r = autoRadius() * UNITS_PER_BLOCK;
+        const int need = autoMinDeaths();
+        int n = 0;
+        for (float x : m_deathX) {
+            if (std::fabs(x - px) <= r && ++n >= need) break;
+        }
+        const bool now = n >= need;
+        if (now != m_inZone) {
+            m_inZone = now;
+            log::debug("Auto zones: {} (x = {:.0f}, {} learned deaths)",
+                now ? "FULL assist" : "soft assist", px, m_deathX.size());
+        }
+    }
+
 public:
+    int learnedDeaths() const { return static_cast<int>(m_deathX.size()); }
+    void clearZones() {
+        m_deathX.clear();
+        m_inZone = false;
+        if (m_levelKey > 0) {
+            Mod::get()->setSavedValue<std::vector<float>>(zonesKey(m_levelKey), std::vector<float>{});
+        }
+    }
+
     // Used by the settings panel
     int stage() const { return m_presetIndex; }                       // 0-based
     void setStage(int index) { applyPreset(index, false); }           // 0-based, clamped by caller
@@ -263,6 +340,7 @@ public:
         m_simulating = false;
         m_firingBuffered = false;
         resetState();
+        loadZones();
     }
 
     void quit() {
@@ -282,7 +360,8 @@ public:
             m_simulationDead = true;
             return true;
         }
-        // Real player died: clear any pending buffer so the respawn is clean.
+        // Real player died: remember where (Auto zones), clear any pending buffer.
+        if (player) recordDeath(player->getPositionX());
         resetState();
         return false;
     }
@@ -457,7 +536,12 @@ public:
 
         const int targetHorizon = isMiniWave ? horizonMiniWave()
             : ((isWave || isShip) ? horizonWave() : horizonNormal());
-        const int maxDelayFrames = isWave ? m_maxTicksWave : (isShip ? shipTicks() : m_maxTicksNormal);
+        int maxDelayFrames = isWave ? effWaveTicks() : (isShip ? effShipTicks() : effNormalTicks());
+
+        // EXACT CLICK: hold the click back for as long as needed (up to exact-wait ticks) and fire it
+        // at the moment the simulation says it is safe, instead of a short fixed delay.
+        const bool exact = boosted() && exactWait() > 0;
+        if (exact) maxDelayFrames = std::max(maxDelayFrames, exactWait());
 
         // 4. Immediate input survives the whole horizon: nothing to do
         const int ticksFrame0 = getSurvivalTicks(pl, p1, p2, isDual, 0, push, targetHorizon);
@@ -470,14 +554,15 @@ public:
         int bestDelay = 0;
         int bestTicks = ticksFrame0;
 
-        for (int delay = 1; delay <= maxDelayFrames; delay++) {
+        // Long waits are scanned in steps of 4 ticks past 16 to keep the cost of a click low.
+        for (int delay = 1; delay <= maxDelayFrames; delay += (delay >= 16 ? 4 : 1)) {
             const int ticks = getSurvivalTicks(pl, p1, p2, isDual, delay, push, targetHorizon);
 
             if (isWave) {
                 // Delaying a turn inside a flat corridor naturally adds ~(2 * delay) ticks
                 // against the opposite wall, so require a real gain beyond that.
-                const int minClearedGain = (delay * 2) + 10;
-                if (ticks >= targetHorizon && (ticks - ticksFrame0) >= (delay * 2) + 6) {
+                const int minClearedGain = (delay * 2) + (exact ? 4 : 10);
+                if (ticks >= targetHorizon && (ticks - ticksFrame0) >= (delay * 2) + (exact ? 2 : 6)) {
                     bestDelay = delay;
                     bestTicks = ticks;
                     break;
@@ -493,7 +578,7 @@ public:
                     bestTicks = ticks;
                     break;
                 }
-                if (ticks > bestTicks + 12) {
+                if (ticks > bestTicks + (exact ? 1 : 12)) {
                     bestDelay = delay;
                     bestTicks = ticks;
                 }
@@ -517,7 +602,7 @@ public:
     // within the lookahead. If so, try "toggle the button now" (and, for tap modes that are
     // currently holding, "release now, press next tick") and fire it when it survives longer.
     void rescueTick(PlayLayer* pl, PlayerObject* player) {
-        const int horizon = rescueTicks();
+        const int horizon = effRescueTicks();
         if (horizon <= 0 || player->m_isDead || !m_simPlayer1) return;
         if (m_rescueCooldownLeft > 0) { m_rescueCooldownLeft--; return; }
         if (m_waitTicks != -1) return;   // a buffered input is pending: let the buffer finish
@@ -577,6 +662,7 @@ public:
         // Polled before the m_enabled check so the hotkey can always cycle back ON
         pollHotkeys();
 
+        updateZone(player);
         rescueTick(pl, player);
 
         if (!m_enabled) return;
@@ -652,13 +738,29 @@ protected:
         { "rescue-margin",       "Rescue margin (low=aggr.)", 0, 20,       1 },
         { "rescue-urgency",      "Rescue urgency (ticks)",    0, 40,       2 },
         { "rescue-cooldown",     "Rescue cooldown (ticks)",   0, 40,       2 },
+        { "exact-wait",          "Exact click wait (0=off)", 0, 64,       4 },
+        { "auto-zones",          "Auto zones (0=off 1=on)",   0, 1,        1 },
+        { "auto-radius",         "Auto radius (blocks)",      3, 40,       1 },
+        { "auto-min-deaths",     "Auto deaths to trigger",    1, 10,       1 },
     };
     static constexpr int ROW_COUNT = sizeof(ROWS) / sizeof(ROWS[0]);
     static constexpr const char* STAGE_NAMES[] = { "2/2", "4/4", "8/8", "16/8", "CUSTOM", "OFF" };
 
     std::vector<CCLabelBMFont*> m_valueLabels;
+    CCLabelBMFont* m_infoLabel = nullptr;
 public:
     inline static bool s_open = false;
+    inline static bool s_hidPause = false;   // we hid the pause menu because the hotkey opened the panel
+
+    static PauseLayer* findPauseLayer() {
+        auto scene = CCDirector::get()->getRunningScene();
+        return scene ? scene->getChildByType<PauseLayer>(0) : nullptr;
+    }
+    // Shows/hides the pause menu behind the panel
+    static void setPauseLayerVisible(bool visible) {
+        if (auto pause = findPauseLayer()) pause->setVisible(visible);
+    }
+
     ~BufferPopup() override { s_open = false; }
 protected:
 
@@ -677,6 +779,9 @@ protected:
     }
 
     void refreshLabels() {
+        if (m_infoLabel) {
+            m_infoLabel->setString(fmt::format("Learned deaths on this level: {}", s_sim.learnedDeaths()).c_str());
+        }
         for (int i = 0; i < ROW_COUNT; i++) {
             int v = readValue(i);
             if (!ROWS[i].key) {
@@ -688,6 +793,14 @@ protected:
         }
     }
 
+    void onClose(CCObject* sender) override {
+        if (s_hidPause) {
+            setPauseLayerVisible(true);   // back to the normal pause menu
+            s_hidPause = false;
+        }
+        Popup::onClose(sender);
+    }
+
     bool init() {
         if (!Popup::init(320.f, 250.f)) return false;
         this->setTitle("Predictive Input Buffer");
@@ -695,7 +808,7 @@ protected:
         // Scrollable list (mouse wheel or drag) so every row fits on any screen
         const CCSize viewSize { 290.f, 178.f };
         const float rowH = 32.f;
-        const float contentH = std::max(viewSize.height, ROW_COUNT * rowH + 12.f);
+        const float contentH = std::max(viewSize.height, (ROW_COUNT + 1) * rowH + 12.f);
 
         auto scroll = ScrollLayer::create(viewSize);
         scroll->m_contentLayer->setContentSize({ viewSize.width, contentH });
@@ -718,19 +831,32 @@ protected:
 
             auto value = CCLabelBMFont::create("0", "goldFont.fnt");
             value->setScale(0.5f);
-            value->setPosition({ viewSize.width - 108.f, y });
+            value->setPosition({ viewSize.width - 96.f, y });
             scroll->m_contentLayer->addChild(value);
             m_valueLabels.push_back(value);
 
             for (int dir = 0; dir < 2; dir++) {
-                auto spr = ButtonSprite::create(dir ? "+" : "-", 28, true, "bigFont.fnt", "GJ_button_04.png", 26.f, 0.7f);
+                auto spr = ButtonSprite::create(dir ? "+" : "-", 20, true, "bigFont.fnt", "GJ_button_04.png", 18.f, 0.5f);
                 auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BufferPopup::onStep));
                 btn->setTag(i * 2 + dir);
-                btn->setPosition({ viewSize.width - (dir ? 20.f : 56.f), y });
+                btn->setPosition({ viewSize.width - (dir ? 18.f : 46.f), y });
                 menu->addChild(btn);
             }
         }
+
+        // Last row: wipe what Auto zones learned about this level
+        {
+            const float y = contentH - 20.f - ROW_COUNT * rowH;
+            auto spr = ButtonSprite::create("Clear learned zones", "goldFont.fnt", "GJ_button_04.png", 0.7f);
+            auto btn = CCMenuItemSpriteExtra::create(spr, this, menu_selector(BufferPopup::onClearZones));
+            btn->setPosition({ viewSize.width / 2, y });
+            menu->addChild(btn);
+        }
         scroll->scrollToTop();
+
+        m_infoLabel = CCLabelBMFont::create("", "chatFont.fnt");
+        m_infoLabel->setScale(0.55f);
+        m_mainLayer->addChildAtPosition(m_infoLabel, Anchor::Top, { 0.f, -38.f });
 
         auto hint = CCLabelBMFont::create("Scroll with the mouse wheel. 4 ticks = 1 frame @ 60fps", "chatFont.fnt");
         hint->setScale(0.5f);
@@ -740,6 +866,12 @@ protected:
         refreshLabels();
         handleTouchPriority(this);
         return true;
+    }
+
+    void onClearZones(CCObject*) {
+        s_sim.clearZones();
+        refreshLabels();
+        Notification::create("Learned zones cleared for this level", NotificationIcon::Success, 1.2f)->show();
     }
 
     void onStep(CCObject* sender) {
@@ -764,15 +896,28 @@ public:
     }
 };
 
-// Opens the panel from anywhere; pauses the level first if we are playing.
+// Opens the panel from anywhere. If the level is running it is paused, but the pause menu
+// stays hidden behind the panel; closing the panel brings the normal pause menu back.
 void openBufferPanel() {
     if (BufferPopup::s_open) return;
+    bool hidePause = false;
     if (auto pl = PlayLayer::get()) {
-        auto scene = CCDirector::get()->getRunningScene();
-        bool alreadyPaused = scene && scene->getChildByType<PauseLayer>(0) != nullptr;
-        if (!alreadyPaused) pl->pauseGame(false);
+        if (!BufferPopup::findPauseLayer()) {
+            pl->pauseGame(false);
+            hidePause = true;
+        }
     }
-    if (auto popup = BufferPopup::create()) popup->show();
+    auto popup = BufferPopup::create();
+    if (!popup) return;
+    popup->show();
+    if (hidePause) {
+        BufferPopup::s_hidPause = true;
+        BufferPopup::setPauseLayerVisible(false);
+        // In case the pause menu is only added to the scene a moment later
+        queueInMainThread([] {
+            if (BufferPopup::s_open && BufferPopup::s_hidPause) BufferPopup::setPauseLayerVisible(false);
+        });
+    }
 }
 
 class $modify(BufPauseLayer, PauseLayer) {

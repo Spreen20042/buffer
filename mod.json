@@ -3,7 +3,7 @@
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.5.5",
+	"version": "v1.7.0",
 	"id": "ai.predictivebuffer",
 	"name": "Predictive Input Buffer",
 	"developer": "lilWC",
@@ -161,6 +161,38 @@
 			"default": 6,
 			"min": 0,
 			"max": 40
+		},
+		"exact-wait": {
+			"type": "int",
+			"name": "Exact Click Wait (ticks, 0 = off)",
+			"description": "Your click is held back for up to this many ticks and fired at the exact moment the simulation says it is safe. 0 = off. 4 ticks = 1 frame @ 60fps. Try 24. Long waits make the click late in Wave, so raise it carefully.",
+			"default": 0,
+			"min": 0,
+			"max": 64
+		},
+		"auto-zones": {
+			"type": "int",
+			"name": "Auto Zones (0 = off, 1 = on)",
+			"description": "Assist stays soft everywhere except near places where you died before on that level; there it uses your full configuration (Stage, Ship delay, Rescue). Needs a few attempts to learn.",
+			"default": 0,
+			"min": 0,
+			"max": 1
+		},
+		"auto-radius": {
+			"type": "int",
+			"name": "Auto Radius (blocks)",
+			"description": "Distance around each learned death where full assist is active.",
+			"default": 10,
+			"min": 3,
+			"max": 40
+		},
+		"auto-min-deaths": {
+			"type": "int",
+			"name": "Auto Deaths To Trigger",
+			"description": "How many deaths close together mark a zone as a problem spot.",
+			"default": 2,
+			"min": 1,
+			"max": 10
 		}
 	}
 }
